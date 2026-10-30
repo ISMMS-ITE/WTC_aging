@@ -1,0 +1,233 @@
+
+
+```{r setup, include=TRUE}
+library(rprojroot)
+knitr::opts_knit$set(root.dir = rprojroot::find_rstudio_root_file())
+```
+
+```{r}
+library(tidyverse)
+library(dplyr)
+library(readxl)
+library(writexl)
+library(dplyr)
+library(forcats)
+library(gtsummary)
+library(flextable)
+library(officer)
+```
+
+```{r}
+samples_119 = read_excel("data/all_fastq.xlsx")
+samples_119_cancer = samples_119 %>% 
+  dplyr::filter(tissue_type2 %in% c(
+    "Papillary thyroid cancer",
+        "Follicular carcinoma",                                      
+        "Follicular adenocarcinoma",
+        "Thyroid carcinoma",
+        "Classic component", 
+        "Follicular lesion",
+        "Metastatic lymph node"
+  ))
+samples_119_normal = read_excel("data/normal_fastq.xlsx")
+samples_119_thyroiditis = read_excel("data/thyroiditis_fastq.xlsx")
+```
+
+```{r}
+qc_drop_cancer = c(
+  "SID037",
+  "SID011",
+  "SID013",
+  "SID024"
+)
+
+samples_119_cancer_qc_drop = samples_119_cancer %>%          # dropped 4 cancer cases --  now have 69 unique subjects
+  dplyr::filter(!subject_id %in% qc_drop_cancer)
+```
+
+```{r}
+final_samples_115 = rbind(
+  samples_119_cancer_qc_drop,
+  samples_119_normal, 
+  samples_119_thyroiditis
+)
+
+smallest_tumor_drop = c("SC873744")
+
+final_samples_114 = final_samples_115 %>% 
+  dplyr::filter(!sample_id %in% smallest_tumor_drop)
+
+final_samples_113 = final_samples_114 %>% 
+  dplyr::add_row(
+    subject_id = "SID005",
+    sample_id = "SC873736_37",
+    group = "WTC Case",
+    tissue_type1 = "PTC",
+    tissue_type2 = "Papillary thyroid cancer",
+    carcinoma_present = "yes",
+    normal_present = "no",
+    thyroiditis_present = "no",
+    fastq = "yes",
+    n_samples = "1 (mean PTC)",
+    .after = 2
+  ) %>% 
+  dplyr::filter(!sample_id %in% c("SC873736", "SC873737"))
+
+final_samples_112 = final_samples_113 %>% 
+   dplyr::add_row(
+    subject_id = "SID008",
+    sample_id = "SC873739_40",
+    group = "WTC Case",
+    tissue_type1 = "PTC",
+    tissue_type2 = "Papillary thyroid cancer",
+    carcinoma_present = "yes",
+    normal_present = "no",
+    thyroiditis_present = "yes",
+    fastq = "yes",
+    n_samples = "2 (thyroiditis and mean PTC)",
+    .after = 5
+  ) %>% 
+  dplyr::filter(!sample_id %in% c("SC873740", "SC873739"))
+
+clinical = read_excel("data/all_samples_clinical.xlsx")
+
+final_samples_112 = final_samples_112 %>% 
+  dplyr::select(subject_id, sample_id, group, tissue_type2)
+
+clinical = clinical %>% 
+  dplyr::select(subject_id, sample_id, chron_age, sex, ms_histology, race)
+
+final_samples_112 = merge(
+  final_samples_112, 
+  clinical, 
+  by = c("subject_id", "sample_id")
+)
+
+```
+
+```{r}
+race_cancer = read_excel("data/no_race_samples.xlsx") %>% 
+  dplyr::select(-sample_id)
+race_normal = read_excel("data/no_race_samples.xlsx", sheet = 2, skip = 1)
+race = rbind(race_cancer, race_normal) %>% 
+  dplyr::filter(!is.na(matched_race)) %>% 
+  dplyr::select(subject_id, matched_race) %>% 
+  dplyr::distinct(subject_id, .keep_all = TRUE) %>% 
+  dplyr::rename(race = matched_race)
+
+final_samples_112 <- final_samples_112 %>%
+  left_join(race, by = "subject_id", suffix = c("", "_new")) %>%
+  dplyr::mutate(
+    race = coalesce(race, race_new),   # use new race only if old is NA
+    race = if_else(is.na(race), "Missing", race)
+  ) %>%
+  dplyr::select(-race_new)
+
+normal_thyroid_clinical = final_samples_112 %>% 
+  dplyr::filter(!tissue_type2 == "Thyroiditis") %>%
+  dplyr::mutate(
+    race_binary = case_when(
+      race == "White" ~ "White",
+      race == "Missing" ~ "Missing",
+      is.na(race) ~ "Missing",
+      TRUE ~ "Non-White"
+    ),
+    tissue_type_group = case_when(
+      tissue_type2 == "Normal" ~ "Normal",
+      TRUE ~ "Cancer"
+    )
+  )
+```
+
+```{r}
+normal_only_df <- normal_thyroid_clinical %>%
+  filter(tissue_type_group == "Normal")
+
+normal_only_df <- normal_only_df %>%
+  filter(subject_id != "SID128")
+
+cancer_only_df <- normal_thyroid_clinical %>%
+  filter(tissue_type_group == "Cancer")
+
+cancer_only_df <- cancer_only_df %>% 
+  filter(subject_id != "SID030")
+
+normal_only_df <- normal_only_df %>%
+  mutate(
+    group = factor(group,
+                   levels = c("WTC Case", "Control"))
+  )
+
+cancer_only_df <- cancer_only_df %>%
+  mutate(
+    group = factor(group,
+                   levels = c("WTC Case", "Control"))
+  )
+
+normal_gtsum <- normal_only_df %>%
+  dplyr::select(group, chron_age, sex, race_binary) %>%
+  tbl_summary(
+    by = group,
+    statistic = list(
+      chron_age ~ "{mean} ({sd})"
+    ),
+    digits = list(
+      chron_age ~ 1
+    ),
+    label = list(
+      chron_age ~ "Age at Diagnosis (years)",
+      sex ~ "Sex, n (%)",
+      race_binary ~ "Race, n (%)"
+    )
+  ) %>%
+  add_p(
+    test = list(
+      chron_age ~ "t.test",
+      all_categorical() ~ "fisher.test"
+    )
+  ) %>%
+  modify_header(
+    list(
+      stat_1 ~ "**WTC Exposed** N = {n}",
+      stat_2 ~ "**WTC Unexposed** N = {n}"
+    )
+  ) %>%
+  bold_labels()
+
+normal_gtsum %>%
+  as_flex_table() %>%
+  flextable::save_as_image(
+    path = "plots/normal_gtsum.png"
+  )
+
+cancer_gtsum <- cancer_only_df %>%
+  dplyr::select(group, chron_age, sex, race_binary) %>%
+  tbl_summary(
+    by = group,
+    statistic = list(
+      chron_age ~ "{mean} ({sd})"
+    ),
+    digits = list(
+      chron_age ~ 1
+    ),
+    label = list(
+      chron_age ~ "Age at Diagnosis (years)",
+      sex ~ "Sex, n (%)",
+      race_binary ~ "Race, n (%)"
+    )
+  ) %>%
+  add_p(
+    test = list(
+      chron_age ~ "t.test",
+      all_categorical() ~ "fisher.test"
+    )
+  ) %>%
+  modify_header(
+    list(
+      stat_1 ~ "**WTC Exposed** N = {n}",
+      stat_2 ~ "**WTC Unexposed** N = {n}"
+    )
+  ) %>%
+  bold_labels()
+
+```
