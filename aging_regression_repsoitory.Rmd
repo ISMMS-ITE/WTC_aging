@@ -1,0 +1,180 @@
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(dplyr)
+library(readxl)
+library(RNAAgeCalc)
+library(knitr)
+```
+
+```{r}
+prostate_trans_age = read.csv("raw_data/bio_age_prostate_updated.csv")
+
+thyroid_samples = read.csv("raw_data/final_samples_112.csv") %>% 
+  dplyr::rename(tissue_type = tissue_type2)
+thyroid_rna_counts = read.delim("raw_data/all_samples_genes_counts_2026.matrix")
+
+colnames(thyroid_rna_counts) = sub(".*(SC[0-9]+).*", "\\1", colnames(thyroid_rna_counts))
+rownames(thyroid_rna_counts) = thyroid_rna_counts[[1]]
+thyroid_rna_counts = thyroid_rna_counts[ , -1]
+thyroid_rna_counts[["SC873736_37"]] = rowMeans(thyroid_rna_counts[, c("SC873736", "SC873737")], na.rm = TRUE)
+thyroid_rna_counts[["SC873739_40"]] = rowMeans(thyroid_rna_counts[, c("SC873739", "SC873740")], na.rm = TRUE)
+thyroid_sample_ids = thyroid_samples$sample_id
+thyroid_rna_counts_109 = thyroid_rna_counts[ , colnames(thyroid_rna_counts) %in% thyroid_sample_ids]
+```
+
+```{r}
+thyroid_chron_age = thyroid_samples %>% 
+  dplyr::select(sample_id, chron_age)
+
+thyroid_trans_age = predict_age(exprdata = thyroid_rna_counts_109, tissue = "thyroid",
+                                exprtype = "counts", idtype = "ENSEMBL", stype = "all",
+                                chronage = as.data.frame(thyroid_chron_age))
+```
+
+```{r}
+prostate_clinical = read.csv("data/final_prostate_clinical.csv")
+prostate_trans_age <- prostate_trans_age %>%
+  dplyr::left_join(
+    prostate_clinical %>%
+      dplyr::select(-X, -WTC., -group),
+    by = "subject_id"
+  )
+
+thyroid_trans_age$sample_id = rownames(thyroid_trans_age)
+rownames(thyroid_trans_age) = NULL
+
+all_clinical_thyroid = read_excel("data/all_samples_clinical.xlsx")
+
+thyroid_trans_age = thyroid_trans_age |> 
+  left_join(all_clinical_thyroid |> dplyr::select(sample_id, tissue_type2),
+            by = "sample_id")
+
+thyroid_trans_age = thyroid_trans_age |> 
+  filter(!tissue_type2 == "Thyroiditis")
+
+thyroid_clinical = read.csv("data/nthyroid_clinical_full.csv")
+thyroid_trans_age = thyroid_trans_age |>
+  left_join(
+    thyroid_clinical |>
+  dplyr::select(sample_id, group, sex, race_binary, tissue_type_group, ms_histology),
+  by = "sample_id")
+
+thyroid_tumor_trans_age = thyroid_trans_age |> 
+  filter(tissue_type_group == "Cancer")
+
+thyroid_tumor_trans_age <- thyroid_tumor_trans_age %>%
+  dplyr::mutate(
+    ms_histology_simple = dplyr::case_when(
+      
+      
+      stringr::str_detect(
+        ms_histology,
+        stringr::regex("papillary", ignore_case = TRUE)
+      ) ~ "Papillary thyroid carcinoma",
+      
+      
+      stringr::str_detect(
+        ms_histology,
+        stringr::regex(
+          "follicular carcinoma|follicular adenocarcinoma|oxyphilic adenocarcinoma",
+          ignore_case = TRUE
+        )
+      ) ~ "Follicular thyroid carcinoma",
+      
+      is.na(ms_histology) ~ NA_character_,
+      
+      TRUE ~ "Other"
+    )
+  )
+
+thyroid_normal_trans_age = thyroid_trans_age |> 
+  filter(tissue_type_group == "Normal")
+
+prostate_trans_age$sex = "M"
+prostate_trans_age$tissue = "Prostate"
+prostate_trans_age = prostate_trans_age |> 
+  rename(AgeAccelResid = age_acceleration, sample_id= subject_id)
+prostate_trans_age <- prostate_trans_age %>%
+  dplyr::mutate(
+    group = dplyr::case_when(
+      group %in% c("WTC Exposed", "WTC-exposed", "WTC Responder") ~
+        "WTC Responder",
+      
+      group %in% c("WTC Unexposed", "WTC-unexposed", "Control") ~
+        "Control",
+      
+      TRUE ~ as.character(group)
+    ),
+    
+    race = dplyr::case_when(
+      race == "White" ~ "White",
+      is.na(race) ~ NA_character_,
+      TRUE ~ "Non-White"
+    )
+  )
+    
+
+thyroid_tumor_trans_age$tissue = "Thyroid"
+thyroid_tumor_trans_age = thyroid_tumor_trans_age |> 
+  rename(race = race_binary)
+thyroid_tumor_trans_age <- thyroid_tumor_trans_age %>%
+  dplyr::mutate(
+    group = dplyr::case_when(
+      group %in% c("WTC Exposed", "WTC-exposed", "WTC Responder", "WTC Case") ~
+        "WTC Responder",
+      
+      group %in% c("WTC Unexposed", "WTC-unexposed", "Control") ~
+        "Control",
+      
+      TRUE ~ as.character(group)
+    )
+  )
+
+
+pt_tumors = rbind(
+  prostate_trans_age |>
+    dplyr::select(sample_id, RNAAge, ChronAge, AgeAccelResid, group, sex, race, tissue),
+  thyroid_tumor_trans_age |>
+    dplyr::select(sample_id, RNAAge, ChronAge, AgeAccelResid, group, sex, race, tissue)
+) |>
+  dplyr::mutate(
+    tissue = factor(tissue)
+  )
+```
+
+```{r}
+pt_tumors <- pt_tumors %>%
+  filter(sample_id != "SC873777")
+thyroid_normal_trans_age <- thyroid_normal_trans_age %>%
+  filter(sample_id != "SC873846")
+```
+
+```{r}
+all_tumors_model = lm(AgeAccelResid ~ group + sex + race + tissue, data = pt_tumors)
+summary(all_tumors_model)
+confint(all_tumors_model)
+```
+
+```{r}
+prostate_tumors_model = lm(AgeAccelResid ~ group + race + gleason, data = prostate_trans_age)
+summary(prostate_tumors_model)
+confint(prostate_tumors_model)
+```
+
+```{r}
+thyroid_tumors_model = lm(AgeAccelResid ~ group + sex + race + ms_histology_simple, data = thyroid_tumor_trans_age)
+summary(thyroid_tumors_model)
+confint(thyroid_tumors_model)
+```
+
+```{r}
+thyroid_normals_model = lm(AgeAccelResid ~ group + sex + race_binary, data = thyroid_normal_trans_age)
+summary(thyroid_normals_model)
+confint(thyroid_normals_model)
+```
+

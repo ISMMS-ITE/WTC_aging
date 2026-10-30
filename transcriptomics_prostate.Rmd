@@ -1,0 +1,507 @@
+
+```{r setup, include=TRUE}
+library(rprojroot)
+knitr::opts_knit$set(root.dir = rprojroot::find_rstudio_root_file())
+```
+
+```{r, warning = FALSE, comment = "", message = FALSE}
+library(RNAAgeCalc)
+library(readr)
+library(readxl)
+library(stringr)
+library(dplyr)
+library(knitr)
+library(tidyverse)
+library(writexl)
+
+
+wtc_prostate_rna = read.csv("RNAseq_WTC_prostate.csv")
+rownames(wtc_prostate_rna) = wtc_prostate_rna[[1]]
+wtc_prostate_rna = wtc_prostate_rna[ , -1]
+
+prostate_full = read_excel("prostate_full.xlsx")
+
+prostate_chron_age = 
+  prostate_full[c("Subject in first DNA/ RNA study", "Age")] %>% 
+  na.omit(prostate_full) %>% 
+  dplyr::rename(sample_id = "Subject in first DNA/ RNA study") %>% 
+  dplyr::rename(chron_age = "Age") 
+
+prostate_chron_age$sample_id = toupper(prostate_chron_age$sample_id) 
+                                            
+missing_rows = data.frame(
+  sample_id = c("W2", "W13", "C7"),
+  chron_age = c(59, 52, 59)
+)
+
+prostate_chron_age = rbind(prostate_chron_age, missing_rows)
+
+valid_ids = colnames(wtc_prostate_rna)          
+prostate_chron_age = subset(prostate_chron_age, sample_id %in% valid_ids) 
+```
+
+```{r, warning = FALSE, comment = ""}
+bio_age_prostate = predict_age(exprdata = wtc_prostate_rna, tissue = "prostate",
+                               exprtype = "FPKM", idtype = "SYMBOL", stype = 
+                                "all", chronage = 
+                                 as.data.frame(prostate_chron_age))
+  
+  
+  
+library(writexl)
+library(openxlsx)
+
+kable(bio_age_prostate, col.names = c("Transcriptional Age", "Chronological Age"), 
+                                    format = "markdown", caption = "Transcriptional Age Table")
+```
+
+```{r, warning = FALSE, comment = ""} 
+
+mean_bage_wtc = 
+  mean(bio_age_prostate$RNAAge[startsWith(rownames(bio_age_prostate), "W")], 
+       na.rm = TRUE)
+
+mean_bage_cont = 
+  mean(bio_age_prostate$RNAAge[startsWith(rownames(bio_age_prostate), "C")],
+       na.rm = TRUE)
+```
+
+```{r, warning = FALSE, comment = ""}
+mean_cage_wtc = 
+  mean(bio_age_prostate$ChronAge[startsWith(rownames(bio_age_prostate), "W")], 
+       na.rm = TRUE)
+# write.csv(mean_cage_wtc, "mean_cage_wtc.csv", row.names = FALSE)
+
+mean_cage_cont =
+  mean(bio_age_prostate$ChronAge[startsWith(rownames(bio_age_prostate), "C")], 
+       na.rm = TRUE)
+```
+
+```{r, warning = FALSE, comment = ""}
+mean_age_tb = data.frame(
+                  population = c("WTC Responders", "Control Group"),
+                  avg_chronological_age_years = 
+                    c(mean_cage_wtc, mean_cage_cont),
+                  avg_transcriptional_age_years = 
+                    c(mean_bage_wtc, mean_bage_cont),
+                  difference = c(mean_bage_wtc, mean_bage_cont) - 
+                    c(mean_cage_wtc, mean_cage_cont)
+                  
+)
+
+kable(mean_age_tb, format = "markdown") 
+
+```
+
+```{r}
+prostate_samples <- prostate_full %>%
+  dplyr::filter(!is.na(`Subject in first DNA/ RNA study`)) %>% 
+  dplyr::select(`Subject in first DNA/ RNA study`, `WTC#`, Age, Race, `Gleason score`) %>% 
+  dplyr::mutate(
+    race_binary = case_when(
+      Race %in% c("w", "nhw") ~ "White",
+      is.na(Race) ~ "Missing",
+      TRUE ~ "Non-White"
+    )
+  ) %>% 
+  dplyr::select(-Race) %>% 
+  dplyr::rename(subject_id = `Subject in first DNA/ RNA study`) %>% 
+  dplyr::mutate(
+    group = case_when(
+      startsWith(toupper(subject_id), "W") ~ "WTC Exposed",
+      startsWith(toupper(subject_id), "C") ~ "WTC Unexposed",
+      TRUE ~ NA_character_
+    )
+  )
+
+prostate_samples <- prostate_samples %>%
+  dplyr::mutate(subject_id = toupper(subject_id)) 
+
+prostate_samples <- prostate_samples %>%
+  add_row(
+    subject_id = "W2",
+    `WTC#` = "W06523",
+    Age = 59,
+    `Gleason score` = NA,
+    race_binary = "Missing",
+    group = "WTC Exposed"
+  ) %>% 
+  add_row(
+    subject_id = "W13",
+    `WTC#` = "W51120",
+    Age = 52,
+    `Gleason score` = NA,
+    race_binary = "White",
+    group = "WTC Exposed"
+  ) %>% 
+  add_row(
+    subject_id = "C7",
+    `WTC#` = "NA",
+    Age = 59,
+    `Gleason score` = NA,
+    race_binary = "Missing",
+    group = "WTC Unexposed"
+  )
+
+
+prostate_samples_with_rna = names(wtc_prostate_rna)
+prostate_samples = prostate_samples %>% 
+  dplyr::filter(subject_id %in% prostate_samples_with_rna)
+
+prostate_samples <- prostate_samples %>%
+  mutate(
+    `Gleason score` = case_when(
+      is.na(`Gleason score`) ~ "Missing",
+      TRUE ~ as.character(`Gleason score`)
+    )
+  )
+prostate_samples$race_binary[
+  prostate_samples$subject_id == "W2"
+] <- "Non-White" 
+prostate_samples$`Gleason score`[
+  prostate_samples$subject_id == "W2"
+] <- "7"
+prostate_samples$race_binary[
+  prostate_samples$subject_id == "W13"
+] <- "White" 
+prostate_samples$`Gleason score`[
+  prostate_samples$subject_id == "W13"
+] <- "6"
+prostate_samples$race_binary[
+  prostate_samples$subject_id == "W14"
+] <- "White" 
+prostate_samples$race_binary[
+  prostate_samples$subject_id == "W10"
+] <- "White" 
+
+prostate_samples <- prostate_samples %>%
+  mutate(
+    `Gleason score` = case_when(
+      `Gleason score` %in% c("8", "9") ~ "8–9",
+      TRUE ~ `Gleason score`
+    )
+  )
+
+prostate_samples <- prostate_samples %>%
+  mutate(
+    race_binary = factor(
+      race_binary,
+      levels = c("White", "Non-White", "Missing")
+    )
+  )
+
+library(gtsummary)
+library(flextable)
+library(officer)
+
+prostate_gtsum = prostate_samples %>%
+  dplyr::select(
+    group,
+    Age,
+    `Gleason score`,
+    race_binary
+  ) %>%
+  tbl_summary(
+    by = group,
+    statistic = list(
+      all_continuous() ~ "{mean} ({sd})"
+    ),
+    digits = list(
+      all_continuous() ~ 1
+    ),
+    label = list(
+      Age ~ "Age at Diagnosis (years)",
+      `Gleason score` ~ "Gleason Score",
+      race_binary ~ "Race, n (%)"
+    )
+  ) %>%
+  add_p(
+    test = list(
+      all_continuous() ~ "t.test",
+      all_categorical() ~ "fisher.test"
+    )
+  ) %>%
+  modify_header(
+    list(
+      stat_1 ~ "**WTC Exposed** N = {n}",
+      stat_2 ~ "**WTC Unexposed** N = {n}"
+    )
+  ) %>%
+  bold_labels()
+```
+
+```{r}
+gleason_new = prostate_full %>% 
+  dplyr::select(`Subject in first DNA/ RNA study`, `Gleason score`) %>% 
+  dplyr::filter(!is.na(`Subject in first DNA/ RNA study`)) %>% 
+  dplyr::rename(subject_id = `Subject in first DNA/ RNA study`, gleason = `Gleason score`)
+gleason_new$subject_id <- toupper(gleason_new$subject_id)
+
+
+prostate_trans_age = prostate_trans_age %>% 
+  dplyr::rename(subject_id = sample_id)
+
+gleason_accel_new = left_join(
+  prostate_trans_age, 
+  gleason_new, 
+  by = "subject_id"
+)
+
+gleason_accel_new$gleason[
+  gleason_accel_new$subject_id == "W2"
+] = 7
+gleason_accel_new$gleason[
+  gleason_accel_new$subject_id == "W13"
+] = 6
+
+gleason_accel_new = gleason_accel_new %>% 
+  dplyr::filter(!is.na(gleason))
+
+ggplot(gleason_accel_new, aes(x = gleason, y = AgeAccelResid)) +
+  geom_point(aes(color = exposure), size = 0.8, inherit.aes = TRUE) +
+  scale_color_manual(
+    values = c("WTC Responder" = "red", "Control" = "blue"),
+    labels = c("WTC Responder" = "WTC-exposed",
+               "Control" = "WTC-unexposed")
+  ) +
+  labs(
+    x = "Gleason score",
+    y = "Aging Acceleration",
+    title = "Gleason Score vs Aging Acceleration in Prostate Cancer Tissue"
+  )
+```
+
+
+
+
+
+
+
+
+# build full prostate subjects clinical dataset including all missing values and save for future use
+```{r}
+final_prostate_clinical = prostate_full %>% 
+  dplyr::filter(!is.na(`Subject in first DNA/ RNA study`))
+final_prostate_clinical$`Subject in first DNA/ RNA study` = toupper(final_prostate_clinical$`Subject in first DNA/ RNA study`)
+final_prostate_clinical = final_prostate_clinical %>% 
+  dplyr::select(`Subject in first DNA/ RNA study`, `WTC#`, Age, Race, `Gleason score`) %>% 
+  mutate(
+    Race = case_when(
+      Race == "h"   ~ "Hispanic",
+      Race == "w"   ~ "White",
+      Race == "nhw" ~ "White",
+      Race == "B"   ~ "Black",
+      Race == "Indian" ~ "Indian",
+      is.na(Race)   ~ NA_character_,
+      TRUE ~ Race
+    )
+  ) %>% 
+  dplyr::rename(subject_id = `Subject in first DNA/ RNA study`, age_at_diag = Age, race = Race, gleason = `Gleason score`) %>% 
+  mutate(
+    group = case_when(
+      startsWith(subject_id, "C") ~ "Control",
+      startsWith(subject_id, "W") ~ "WTC Responder",
+      TRUE ~ NA_character_
+    )
+  ) %>%
+  mutate(gleason = as.numeric(gleason))
+
+
+
+# add missing rows for W2, W13, and C7
+
+final_prostate_clinical <- final_prostate_clinical %>%
+  add_row(
+    subject_id = "W2",
+    `WTC#` = "W06523",
+    age_at_diag = 59,
+    gleason = 7,
+    race = "Black",
+    group = "WTC Responder"
+  ) %>% 
+  add_row(
+    subject_id = "W13",
+    `WTC#` = "W51120",
+    age_at_diag = 52,
+    gleason = 6,
+    race = "White",
+    group = "WTC Responder"
+  ) %>% 
+  add_row(
+    subject_id = "C7",
+    `WTC#` = "NA",
+    age_at_diag = 59,
+    gleason = NA,
+    race = "Missing",
+    group = "Control"
+  )
+
+final_prostate_clinical$race[
+  final_prostate_clinical$subject_id == "W10"
+] = "White"
+final_prostate_clinical$race[
+  final_prostate_clinical$subject_id == "W14"
+] = "White"
+final_prostate_clinical$race[
+  final_prostate_clinical$subject_id == "W9"
+] = "White"
+
+# write.csv(final_prostate_clinical, "final_prostate_clinical.csv")
+```
+
+# gleason score vs. exposure level 
+```{r}
+prostate_cases_exp = prostate_exposure %>% 
+  dplyr::select(subject_id, EXP4) %>% 
+  dplyr::filter(!EXP4 == "")
+
+# merge clinical data w exposure levels
+# ensure consistent ID formatting
+final_prostate_clinical$subject_id <- toupper(final_prostate_clinical$subject_id)
+
+prostate_cases_exp <- prostate_cases_exp %>%
+  dplyr::mutate(subject_id = toupper(subject_id))
+
+# build exposure_level
+final_prostate_clinical <- final_prostate_clinical %>%
+  dplyr::left_join(
+    prostate_cases_exp %>%
+      dplyr::select(subject_id, EXP4),
+    by = "subject_id"
+  ) %>%
+  dplyr::mutate(
+    exposure_level = case_when(
+      group == "Control" ~ "None",
+      group == "WTC Responder" & !is.na(EXP4) ~ EXP4,
+      group == "WTC Responder" & is.na(EXP4) ~ NA_character_,
+      TRUE ~ NA_character_
+    )
+  )
+
+
+# remove NA exposure level and gleason rows for plotting purposes
+prostate_gleason_exp_plot = final_prostate_clinical %>% 
+  dplyr::filter(!is.na(exposure_level)) %>% 
+  dplyr::filter(!is.na(gleason))
+
+# plot 
+ggplot(prostate_gleason_exp_plot, aes(x = exposure_level, fill = factor(gleason))) +
+  geom_bar(position = "fill") +
+  scale_y_continuous(labels = scales::percent_format()) +
+  labs(
+    x = "WTC Exposure Level",
+    y = "Proportion",
+    fill = "Gleason Score",
+    title = "Gleason Score Distribution by WTC Exposure Level"
+  ) +
+  theme_minimal()
+```
+
+
+
+# 7/29/2026 -- updating the aging manuscript for the reviewers comments and I can't find the code for my original gleason x aging acceleration boxplot with points colored for the different levels of WTC exposure, so recreating it to change the label of the key 
+```{r}
+# Join aging acceleration with Gleason score and WTC exposure intensity
+prostate_accel_gleason_plot <- prostate_trans_age %>%
+  dplyr::select(subject_id, AgeAccelResid) %>%
+  dplyr::left_join(
+    final_prostate_clinical %>%
+      dplyr::select(subject_id, gleason, exposure_level),
+    by = "subject_id"
+  ) %>%
+  dplyr::filter(
+    !is.na(AgeAccelResid),
+    !is.na(gleason),
+    !is.na(exposure_level)
+  ) %>%
+  dplyr::mutate(
+    
+    # Collapse Gleason scores 8 and 9
+    gleason_collapsed = dplyr::case_when(
+      gleason %in% c(8, 9) ~ "8–9",
+      TRUE ~ as.character(gleason)
+    ),
+    
+    gleason_collapsed = factor(
+      gleason_collapsed,
+      levels = c("6", "7", "8–9")
+    ),
+    
+    # Collapse High and Very High exposure
+    exposure_collapsed = dplyr::case_when(
+      exposure_level %in% c("High", "Very High") ~ "High/Very High",
+      TRUE ~ as.character(exposure_level)
+    ),
+    
+    exposure_collapsed = factor(
+      exposure_collapsed,
+      levels = c("None", "Intermediate", "High/Very High")
+    )
+  )
+
+
+# Make jitter reproducible
+set.seed(2026)
+
+p = ggplot(
+  prostate_accel_gleason_plot,
+  aes(x = gleason_collapsed, y = AgeAccelResid)
+) +
+  geom_boxplot(
+    width = 0.6,
+    outlier.shape = NA,
+    fill = "lightgrey",
+    color = "black"
+  ) +
+  geom_jitter(
+    aes(color = exposure_collapsed),
+    width = 0.12,
+    height = 0,
+    size = 0.75,
+    alpha = 1
+  ) +
+  geom_hline(
+    yintercept = 0,
+    linetype = "dashed",
+    linewidth = 0.4
+  ) +
+  scale_color_manual(
+    values = c(
+      "None" = "skyblue3",
+      "Intermediate" = "maroon4",
+      "High/Very High" = "red"
+    ),
+    drop = FALSE
+  ) +
+  labs(
+    x = "Gleason Score",
+    y = "Aging Acceleration",
+    color = "WTC Exposure Intensity"
+  ) +
+  theme_classic()
+
+# #7/30/2026 save for final publication in correct resolution
+# ggsave(
+#   filename = "C:/Users/lazarl05/OneDrive - The Mount Sinai Hospital/Aging Manuscript/Final Figures 7302026/Figure_3.png",
+#   plot = p,
+#   width = 7,
+#   height = 4,
+#   units = "in",
+#   dpi = 300
+# )
+
+# ggsave(
+#   filename = "C:/Users/lazarl05/OneDrive - The Mount Sinai Hospital/Aging Manuscript/Final Figures 7302026/Figure_3.tiff",
+#   plot = p,
+#   width = 6,
+#   height = 4,
+#   units = "in",
+#   dpi = 300,
+#   compression = "lzw"
+# )
+
+```
+
+
+
+

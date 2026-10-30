@@ -1,0 +1,227 @@
+
+```{r setup, include=TRUE}
+library(rprojroot)
+knitr::opts_knit$set(root.dir = rprojroot::find_rstudio_root_file())
+```
+
+```{r}
+library(tidyverse)
+library(dplyr)
+library(readxl)
+library(RNAAgeCalc)
+library(knitr)
+```
+
+```{r}
+prostate_trans_age = read.csv("raw_data/bio_age_prostate_updated.csv")
+
+
+thyroid_samples = read.csv("raw_data/final_samples_112.csv") %>% 
+  dplyr::rename(tissue_type = tissue_type2)
+thyroid_rna_counts = read.delim("raw_data/all_samples_genes_counts_2026.matrix")
+
+colnames(thyroid_rna_counts) = sub(".*(SC[0-9]+).*", "\\1", colnames(thyroid_rna_counts))
+rownames(thyroid_rna_counts) = thyroid_rna_counts[[1]]
+thyroid_rna_counts = thyroid_rna_counts[ , -1]
+thyroid_rna_counts[["SC873736_37"]] = rowMeans(thyroid_rna_counts[, c("SC873736", "SC873737")], na.rm = TRUE)
+thyroid_rna_counts[["SC873739_40"]] = rowMeans(thyroid_rna_counts[, c("SC873739", "SC873740")], na.rm = TRUE)
+thyroid_sample_ids = thyroid_samples$sample_id
+thyroid_rna_counts_109 = thyroid_rna_counts[ , colnames(thyroid_rna_counts) %in% thyroid_sample_ids]
+```
+
+```{r}
+thyroid_chron_age = thyroid_samples %>% 
+  dplyr::select(sample_id, chron_age)
+
+thyroid_trans_age = predict_age(exprdata = thyroid_rna_counts_109, tissue = "thyroid",
+                                exprtype = "counts", idtype = "ENSEMBL", stype = "all",
+                                chronage = as.data.frame(thyroid_chron_age))
+```
+
+```{r}
+thyroid_trans_age$age_diff = thyroid_trans_age$RNAAge - thyroid_trans_age$ChronAge
+
+thyroid_trans_age = thyroid_trans_age %>%
+  rownames_to_column("sample_id")
+
+exposure = thyroid_samples %>% 
+  dplyr::select(sample_id, group) %>% 
+  dplyr::rename(exposure = group)
+
+thyroid_trans_age = merge(
+  thyroid_trans_age, 
+  exposure, 
+  by = "sample_id"
+)
+
+thyroid_trans_age$exposure[thyroid_trans_age$exposure == "WTC Case"] = "WTC Responder"
+```
+
+```{r}
+library(flextable)
+library(officer)
+library(gt)
+
+prostate_df <- prostate_trans_age %>%
+  mutate(
+    group = exposure,
+    tissue = "Prostate"
+  )
+
+thyroid_cancer_df <- thyroid_cancer_trans_age %>%
+  mutate(
+    group = exposure,
+    tissue = "Thyroid Tumor"
+  )
+
+thyroid_normal_df <- normal_trans_age %>%
+  mutate(
+    group = exposure,
+    tissue = "Thyroid Normal"
+  )
+
+combined_df <- bind_rows(
+  prostate_df,
+  thyroid_cancer_df,
+  thyroid_normal_df
+)
+
+combined_df <- combined_df %>% 
+  mutate(
+    tissue = case_when(
+      tissue == "Prostate" ~ "Prostate Tumor",
+      TRUE ~ tissue
+    ),
+    group = recode(group,
+                   "Control" = "Unexposed",
+                   "WTC Responder" = "Exposed")
+  )
+
+get_group_row <- function(df, tissue_name, exposure_level) {
+  
+  df_sub <- df %>%
+    filter(tissue == tissue_name, group == exposure_level)
+  
+  tibble(
+    Tissue = tissue_name,
+    `WTC Exposure` = exposure_level,
+    N = nrow(df_sub),
+    
+    `Average Chronological Age (years)` = mean(df_sub$ChronAge, na.rm = TRUE),
+    `Average Biological Age (years)` = mean(df_sub$RNAAge, na.rm = TRUE),
+    
+    `Average Aging Acceleration (years)` = mean(df_sub$AgeAccelResid, na.rm = TRUE)
+  )
+}
+
+table_final <- bind_rows(
+  # Prostate
+  get_group_row(combined_df, "Prostate Tumor", "Exposed"),
+  get_group_row(combined_df, "Prostate Tumor", "Unexposed"),
+  
+  # Thyroid Tumor
+  get_group_row(combined_df, "Thyroid Tumor", "Exposed"),
+  get_group_row(combined_df, "Thyroid Tumor", "Unexposed"),
+  
+  # Thyroid Normal
+  get_group_row(combined_df, "Thyroid Normal", "Exposed"),
+  get_group_row(combined_df, "Thyroid Normal", "Unexposed")
+)
+
+table_final %>%
+  gt() %>%
+  fmt_number(
+    columns = c(`Average Chronological Age (years)`, 
+                `Average Biological Age (years)`, 
+                `Average Aging Acceleration (years)`),
+    decimals = 2
+  )
+
+```
+
+```{r}
+prostate_trans_age = prostate_trans_age %>% 
+  dplyr::rename(
+    AgeAccelResid = age_acceleration, 
+    age_diff = age_difference, 
+    exposure = group,
+    sample_id = subject_id
+  )
+
+prostate_trans_age$tissue = "Prostate Cancer"
+thyroid_cancer_trans_age$tissue = "Thyroid Cancer"
+prostate_thyroid = rbind(
+  prostate_trans_age, thyroid_cancer_trans_age
+)
+prostate_trans_age$tissue = NULL
+thyroid_cancer_trans_age$tissue = NULL
+
+normal_trans_age$tissue = "Normal Thyroid"
+
+all_tissue = rbind(prostate_thyroid, normal_trans_age)
+
+all_tissue = all_tissue %>%
+  mutate(
+    tissue = recode(
+      tissue,
+      "Prostate Cancer" = "Prostate Tumor",
+      "Thyroid Cancer" = "Thyroid Tumor"
+    ),
+    tissue = factor(
+      tissue,
+      levels = c(
+        "Prostate Tumor",
+        "Thyroid Tumor",
+        "Normal Thyroid"
+      )
+    )
+  )
+
+all_tissue$tissue = factor(
+  all_tissue$tissue,
+  levels = c("Prostate Tumor", "Thyroid Tumor", "Normal Thyroid")
+)
+
+pvals = all_tissue %>%
+  group_by(tissue) %>%
+  summarise(
+    p = if(length(unique(exposure)) == 2) {
+      wilcox.test(AgeAccelResid ~ exposure)$p.value
+    } else {
+      NA
+    }
+  ) %>%
+ mutate(
+  p_label = paste0(tissue, "\n(p = ", sprintf("%.2f", p), ")"),
+  p_label = factor(
+    p_label,
+    levels = p_label
+  )
+)
+
+plot_data = all_tissue %>%
+  left_join(pvals, by = "tissue")
+
+
+age_accelplot_final = ggplot(plot_data, aes(x = exposure, y = AgeAccelResid, fill = exposure)) +
+  geom_boxplot(alpha = 0.7, outlier.shape = 16, outlier.size = 0.75) +
+  facet_wrap(~ p_label, scales = "free_y") +
+  scale_fill_manual(values = c("Control" = "lightblue", "WTC Responder" = "red"),
+    labels = c("Control" = "WTC-unexposed",
+               "WTC Responder" = "WTC-exposed")) +
+  theme_minimal(base_size = 10) +
+  labs(
+    x = "",
+    y = "Aging Acceleration",
+    fill = "Exposure:"
+  ) +
+  theme(
+    strip.text = element_text(size = 10),
+    axis.text.x = element_blank(),
+    axis.text.y = element_text(size = 10),
+    legend.position = "bottom"
+  )
+
+age_accelplot_final
+```
+
